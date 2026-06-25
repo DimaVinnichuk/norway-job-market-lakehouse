@@ -1,9 +1,8 @@
-from src.ingest_feed import generate_history_point, \
-    get_jwt_token, get_pipeline_status, fetch_and_save_feed_data
+from src.ingest import generate_history_point, get_jwt_token, \
+    get_pipeline_status, fetch_and_save_feed_data, fetch_and_save_vacancy_details, generate_header_data
 from logging_config import setup_logging
 import logging
-from src.constants import BRONZE_FEED_DIR, STATE_FILE, VACANCIES_STATUS_FILE
-from src.ingest_details import get_ids_active_vacancies
+from src.constants import BRONZE_FEED_DIR, STATE_FILE, ACTIVE_VACANCY_DETAILS_DIR, INACTIVE_VACANCY_DETAILS_DIR
 
 setup_logging()
 logger = logging.getLogger("__name__")
@@ -11,12 +10,13 @@ logger = logging.getLogger("__name__")
 def run_feed_ingestion():
     """Launch feed ingestion process"""
 
-    logger.info("Start feed ingestion process.")
-    start_date_point = get_pipeline_status(generate_history_point, STATE_FILE)
+    logger.info("Start ingestion process.")
+    last_run_date = get_pipeline_status(generate_history_point, STATE_FILE)
     jwt_token = get_jwt_token()
-    fetch_and_save_feed_data(jwt_token, start_date_point, BRONZE_FEED_DIR, STATE_FILE)
-    get_ids_active_vacancies(BRONZE_FEED_DIR, VACANCIES_STATUS_FILE, start_date_point)
-    logger.info("End feed ingestion process.")
+    header_data = generate_header_data(jwt_token, last_run_date)
+    fetch_and_save_feed_data(header_data, BRONZE_FEED_DIR, STATE_FILE)
+    fetch_and_save_vacancy_details(BRONZE_FEED_DIR, ACTIVE_VACANCY_DETAILS_DIR, INACTIVE_VACANCY_DETAILS_DIR, last_run_date, header_data)
+    logger.info("End ingestion process.")
 
 if __name__ == "__main__":
     run_feed_ingestion()
