@@ -85,7 +85,7 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
             response = requests.get(page_url, headers=header_data, timeout=10)
             if response.status_code == 404:
                 logger.info("No fresh data in feed. Response status code: 404")
-                logger.info("Feed data ingestig proccess ended")
+                logger.info("Feed data ingesting proccess ended")
                 raise SystemExit(1)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
@@ -119,37 +119,60 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
     """Extract and save job details from API"""
 
     def write_data_to_file(mode, data, batch_num, partition):
+        """Write prepared batch to a file"""
+
         filename = f"{dir_time}_batch{batch_num}.json"
         filepath = partition / filename
         with open(filepath, mode, encoding="utf-8")as f:
             json.dump(data, f, indent=4)
         return batch_num + 1
     
-    active_batch_num = 1
-    inactive_batch_num = 1
+    def check_already_saved_ids (data_path, dir_time):
+        """Return set of already saved job details from last incomplited session if exists and number of butch to correct batch counting"""
+
+        logger.debug("Checking for already saved active/inactive job details")
+        batch_num = 1
+        writed_job_ids = set()
+        if data_path.exists():
+            job_batches = list(data_path.glob(f"{dir_time}_batch*.json"))
+            if job_batches:
+                logger.debug("Already saved data found at %s", data_path)
+                batch_num = len(job_batches) + 1
+                for job_batch in job_batches:
+                    with open(job_batch, "r", encoding="utf-8") as f:
+                        try:
+                            job_batch_json = json.load(f)
+                            for job in job_batch_json:
+                                job_id = job.get("uuid")
+                                if job_id:
+                                    writed_job_ids.add(job_id)
+                                else:
+                                    logger.warning("Missed uuid for job in batch %s", job_batch)
+                        except json.JSONDecodeError as e:
+                            logger.warning("Not valid json. Skipped batch %s. Error: %s", job_batch, e)
+                        
+                return writed_job_ids, batch_num
+            else:
+                logger.debug("Saved job details not found at %s", data_path)
+                return writed_job_ids, batch_num
+        else:
+            logger.debug("Directory %s is empty", data_path)
+            return writed_job_ids, batch_num
+    
+    dir_year = dirs_name_date.strftime("%Y")
+    dir_month = dirs_name_date.strftime("%m")
+    dir_day = dirs_name_date.strftime("%d")
+    dir_time = dirs_name_date.strftime("%H%M%S")
 
     partition = Path(f"{dir_year}/{dir_month}/{dir_day}")
     active_partition_path = active_dir / partition
     inactive_partition_path = inactive_dir / partition
 
-    writed_job_ids = None
+    inactive_partition_path.mkdir(parents=True, exist_ok=True)
+    active_partition_path.mkdir(parents=True, exist_ok=True)
 
-    if active_partition_path.exists():
-        active_jobs_batches = list(active_partition_path.glob("*.json"))
-        if active_jobs_batches:
-            active_batch_num = len(active_jobs_batches)
-            for active_job_batch in active_jobs_batches:
-                for job in active_job_batch:
-                    job_id = job.get("uuid")
-                    if job_id:
-                        writed_job_ids.add()
-                    else:
-                        logger.warning("Missed uuid for job in batch %s", active_job_batch)
-        else:
-            active_partition_path.rmdir()
-            logger.info("Empty path %s, removed", active_partition_path)
-            
-
+    active_saved_job_ids, active_batch_num = check_already_saved_ids(active_partition_path, dir_time)
+    inactive_saved_job_ids, inactive_batch_num = check_already_saved_ids(inactive_partition_path, dir_time)
 
     logger.info("Ingesting job details...")
     logger.debug("Reading fresh feed data dir: %s...", fresh_feed_data_dir)
@@ -181,19 +204,20 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
                         uniq_ids.add(item_id)
             else:
                 logger.warning("Skip file %s. Feed file do not contains any job data.", feed_file)
-    logger.info(f"{len(uniq_ids)} new changes in feed was found.")
+    logger.info(f"{len(uniq_ids)} uniq ids was retrieved from feed.")
 
-    dir_year = dirs_name_date.strftime("%Y")
-    dir_month = dirs_name_date.strftime("%m")
-    dir_day = dirs_name_date.strftime("%d")
-    dir_time = dirs_name_date.strftime("%H%M%S")
+    if active_saved_job_ids:
+        logger.info("Found saved data for %s active ids. Skip them", len(active_saved_job_ids))
+        uniq_ids.difference_update(active_saved_job_ids)
 
-    inactive_partition_path.mkdir(parents=True, exist_ok=True)
-    active_partition_path.mkdir(parents=True, exist_ok=True)
+    if inactive_saved_job_ids:
+        logger.info("Found saved data for %s inactive ids. Skip them", len(inactive_saved_job_ids))
+        uniq_ids.difference_update(inactive_saved_job_ids)
 
     active_job_list = []
     inactive_job_list = []
 
+    logger.info("Requesting job details...")
     for job_id in uniq_ids:
         url_details = urljoin(URL_DETAILS, job_id)
         try:
@@ -205,7 +229,7 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
         try:
             job_details = response.json()
         except json.JSONDecodeError as e:
-            logger.warning("Skippeed job details for id: %s. Error: %s", job_id, e)
+            logger.warning("Skipped job details for id: %s. Error: %s", job_id, e)
             continue
 
         job_status = job_details.get("status").strip()

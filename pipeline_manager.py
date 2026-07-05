@@ -39,9 +39,9 @@ def run_feed_ingestion():
         logger.info("Found incomplited session folder: %s Start emergency ingestion", incomplited_run_dir)
         ingest_job_details(dir_date, incomplited_run_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data, STATE_FILE)
         
-        pipeline_run_date = current_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        pipeline_run_date = dir_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
         STATE_FILE.write_text(pipeline_run_date, encoding="utf-8")
-        logger.info("Pipeline state file updated wit %s", pipeline_run_date)
+        logger.info("Pipeline state file updated with %s", pipeline_run_date)
     else:
         logger.info("Default ingestion")
         fresh_feed_dir = ingest_feed_data(current_date, header_data, BRONZE_FEED_DIR)
@@ -49,7 +49,7 @@ def run_feed_ingestion():
 
         pipeline_run_date = current_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
         STATE_FILE.write_text(pipeline_run_date, encoding="utf-8")
-        logger.info("Pipeline state file updated wit %s", pipeline_run_date)
+        logger.info("Pipeline state file updated with %s", pipeline_run_date)
 
     logger.info("Pipeline successfuly ended.")
 
