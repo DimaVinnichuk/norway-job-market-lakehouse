@@ -17,7 +17,9 @@ def run_feed_ingestion():
     state_file_content = get_start_date(generate_history_point, STATE_FILE)
     header_data = generate_header_data(token, state_file_content)
     current_date = datetime.now(timezone.utc)
+    feed_ingest_complited = (ACTIVE_JOB_DIR.exists() or INACTIVE_JOB_DIR.exists())
 
+    logger.debug("Checking for failed feed data ingestion session")
     incomplited_run_dir = None
     if BRONZE_FEED_DIR.exists():
         state_date = datetime.strptime(state_file_content, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=timezone.utc)
@@ -30,22 +32,29 @@ def run_feed_ingestion():
                     logger.debug("Empty dir %s removed", dir)
                     dir.rmdir()
                     continue
-                date_from_dir = datetime.strptime(dir.name.strip(), "run-%d%m%y-%H%M%S").replace(tzinfo=timezone.utc)
-                if date_from_dir > state_date:
-                    incomplited_run_dir = dir
-                    dir_date = date_from_dir
+                else:
+                    if not feed_ingest_complited:
+                        logger.debug("Found first failed pipeline start. Run dir and data removed.")
+                        for data in run_files:
+                            data.unlink()
+                        dir.rmdir()
+                    if feed_ingest_complited and run_files:
+                        date_from_dir = datetime.strptime(dir.name.strip(), "run-%d%m%y-%H%M%S").replace(tzinfo=timezone.utc)
+                        if date_from_dir > state_date:
+                            incomplited_run_dir = dir
+                            dir_date = date_from_dir
                     
     if incomplited_run_dir:
-        logger.info("Found incomplited session folder: %s Start emergency ingestion", incomplited_run_dir)
-        ingest_job_details(dir_date, incomplited_run_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data, STATE_FILE)
+        logger.info("Found incomplited session folder: %s Resuming previous feed ingestion session", incomplited_run_dir)
+        ingest_job_details(dir_date, incomplited_run_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data)
         
         pipeline_run_date = dir_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
         STATE_FILE.write_text(pipeline_run_date, encoding="utf-8")
         logger.info("Pipeline state file updated with %s", pipeline_run_date)
     else:
-        logger.info("Default ingestion")
+        logger.debug("No previous failed feed ingestion session was found")
         fresh_feed_dir = ingest_feed_data(current_date, header_data, BRONZE_FEED_DIR)
-        ingest_job_details(current_date, fresh_feed_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data, STATE_FILE)
+        ingest_job_details(current_date, fresh_feed_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data)
 
         pipeline_run_date = current_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
         STATE_FILE.write_text(pipeline_run_date, encoding="utf-8")

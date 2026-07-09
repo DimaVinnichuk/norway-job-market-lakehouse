@@ -28,7 +28,7 @@ def generate_history_point():
 
     logger.debug("Creating historical date point...")
     today = datetime.now(timezone.utc)
-    thirty_days_ago = (today - timedelta(days=30)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    thirty_days_ago = (today - timedelta(hours=24)).strftime("%a, %d %b %Y %H:%M:%S GMT")
     logger.debug("Created date point: %s", thirty_days_ago)
     return thirty_days_ago
 
@@ -49,7 +49,7 @@ def get_jwt_token():
     """Requests and returns a public token from the NAV API"""
 
     try:
-        logger.info("Requesting public token...")
+        logger.info("Retrieving public token...")
         token_response = requests.get(URL_TOKEN, timeout=10)
         token_response.raise_for_status()
     except requests.exceptions.RequestException as e:
@@ -67,7 +67,7 @@ def get_jwt_token():
         raise SystemExit(1)
 
 def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
-    """Extract and feed data and return curent run dir path"""
+    """Extract and save feed data. Return curent run dir path with saved feed data"""
 
     logger.info("Ingesting feed data from API...")
     timestamp_filename = pipeline_run_date.strftime("%d%m%y-%H%M%S")
@@ -75,7 +75,8 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
     current_run_dir.mkdir(parents=True, exist_ok=True)
         
     page_url = URL_FEED
-    page_number = 1
+    page_number = 0
+    items_number = 0
 
     while page_url:
         filename = f"{timestamp_filename}-page{page_number}-raw-jobs.json"
@@ -85,7 +86,8 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
             response = requests.get(page_url, headers=header_data, timeout=10)
             if response.status_code == 404:
                 logger.info("No fresh data in feed. Response status code: 404")
-                logger.info("Feed data ingesting proccess ended")
+                logger.info("Feed data ingesting proccess completed")
+                logger.info("Pipeline completed")
                 raise SystemExit(1)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
@@ -93,6 +95,9 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
             raise SystemExit(1)
         try:
             data_json = response.json()
+            items = data_json.get("items")
+            if items:
+                items_number += len(items)
         except json.JSONDecodeError as e:
             logger.critical("Failed to parse response content to json. Error: %s", e)
             raise SystemExit(1)
@@ -105,6 +110,7 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
             new_url = urljoin(DOMAIN, next_url)
         else:
             logger.info("Next URL is missing. Pagination finished.")
+            logger.info("%s page(s) and %s item(s) from feed was saved at %s", page_number, items_number, current_run_dir)
             break
         if new_url != page_url:
             page_url = new_url
@@ -112,10 +118,10 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
             logger.critical("Next URL is equal to past one. Validation failed")
             break
         time.sleep(0.5)
-    logger.info("Feed data ingestion completed successfully.")
+    logger.info("Feed data ingestion completed.")
     return current_run_dir
 
-def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive_dir, header_data, pipeline_state_file):
+def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive_dir, header_data):
     """Extract and save job details from API"""
 
     def write_data_to_file(mode, data, batch_num, partition):
@@ -136,7 +142,7 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
         if data_path.exists():
             job_batches = list(data_path.glob(f"{dir_time}_batch*.json"))
             if job_batches:
-                logger.debug("Already saved data found at %s", data_path)
+                logger.debug("Already saved job details found at %s", data_path)
                 batch_num = len(job_batches) + 1
                 for job_batch in job_batches:
                     with open(job_batch, "r", encoding="utf-8") as f:
@@ -153,7 +159,7 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
                         
                 return writed_job_ids, batch_num
             else:
-                logger.debug("Saved job details not found at %s", data_path)
+                logger.debug("Allready saved job details not found at %s", data_path)
                 return writed_job_ids, batch_num
         else:
             logger.debug("Directory %s is empty", data_path)
@@ -185,39 +191,42 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
         raise SystemExit(1)
     
     logger.debug("Feed data found at: %s", fresh_feed_data_dir)
-    logger.debug("Creating unique ids from fresh feed data for request details")
+    logger.debug("Creating unique ids from fresh feed data for request job details")
     uniq_ids = set()
     for feed_file in feed_files:
         with open(feed_file, "r", encoding="utf-8") as f:
             try:
                 feed_file_data = json.load(f)
             except json.JSONDecodeError as e:
-                logger.warning("Skip file %s. Do not contains valid json. Error: %s", feed_file, e)
+                logger.warning("Skipped file %s. Do not contains valid json. Error: %s", feed_file, e)
                 continue
             feed_items = feed_file_data.get("items")
             if feed_items:
                 for item in feed_items:
                     item_id = item.get("id").strip()
                     if not item_id:
-                        logger.warning("Vacancy from file %s skipped. Not valid id", feed_file)
+                        logger.warning("Skipped job from file: %s. Not valid id field", feed_file)
                     else:
                         uniq_ids.add(item_id)
             else:
-                logger.warning("Skip file %s. Feed file do not contains any job data.", feed_file)
-    logger.info(f"{len(uniq_ids)} uniq ids was retrieved from feed.")
+                logger.warning("Skipped file: %s. Feed file do not contains any job data.", feed_file)
+    logger.info(f"{len(uniq_ids)} uniq job id(s) was retrieved from feed data.")
+
+    if active_saved_job_ids or inactive_saved_job_ids : logger.info("Resuming failed ingestion job details session.")
 
     if active_saved_job_ids:
-        logger.info("Found saved data for %s active ids. Skip them", len(active_saved_job_ids))
+        logger.info("%s allready saved active ids skipped.", len(active_saved_job_ids))
         uniq_ids.difference_update(active_saved_job_ids)
 
     if inactive_saved_job_ids:
-        logger.info("Found saved data for %s inactive ids. Skip them", len(inactive_saved_job_ids))
+        logger.info("%s allready saved inactive ids skipped.", len(inactive_saved_job_ids))
         uniq_ids.difference_update(inactive_saved_job_ids)
-
+    
     active_job_list = []
     inactive_job_list = []
+    job_details_number = 0
 
-    logger.info("Requesting job details...")
+    logger.debug("Requesting job details by retrieved ids...")
     for job_id in uniq_ids:
         url_details = urljoin(URL_DETAILS, job_id)
         try:
@@ -234,6 +243,7 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
 
         job_status = job_details.get("status").strip()
         if job_status:
+            job_details_number += 1
             if job_status == "ACTIVE":
                 active_job_list.append(job_details)
                 if len(active_job_list) >= 100:
@@ -245,14 +255,15 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
                     inactive_batch_num = write_data_to_file("w", inactive_job_list, inactive_batch_num, inactive_partition_path) 
                     inactive_job_list.clear()
         else:
-            logger.warning("Job details respons has no status fiels. ID: %s skipped", job_id)      
+            logger.warning("Job details response has no status field. Skipped ID: %s", job_id)      
     time.sleep(0.5)
 
     if active_job_list:
         write_data_to_file("w", active_job_list, active_batch_num, active_partition_path)
     if inactive_job_list:
         write_data_to_file("w", inactive_job_list, inactive_batch_num, inactive_partition_path)
-    logger.info("End ingesting job details proccess.")
+    logger.info("%s job details was saved at: %s and(or) %s", job_details_number, active_partition_path, inactive_partition_path)
+    logger.info("Job details ingesting completed.")
 
 
     
