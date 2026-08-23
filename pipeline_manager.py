@@ -3,7 +3,7 @@ from src.ingest import generate_history_point, get_jwt_token, \
 from logging_config import setup_logging
 import logging
 from datetime import datetime, timezone
-from src.constants import BRONZE_FEED_DIR, STATE_FILE, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR
+from src.constants import BRONZE_FEED_DIR, STATE_FILE, JOB_DETAILS_DIR
 
 setup_logging()
 logger = logging.getLogger("__name__")
@@ -17,7 +17,7 @@ def run_feed_ingestion():
     state_file_content = get_start_date(generate_history_point, STATE_FILE)
     header_data = generate_header_data(token, state_file_content)
     current_date = datetime.now(timezone.utc)
-    feed_ingest_complited = (ACTIVE_JOB_DIR.exists() or INACTIVE_JOB_DIR.exists())
+    feed_ingest_complited = JOB_DETAILS_DIR.exists()
 
     logger.debug("Checking for failed feed data ingestion session")
     incomplited_run_dir = None
@@ -46,7 +46,7 @@ def run_feed_ingestion():
                     
     if incomplited_run_dir:
         logger.info("Found incomplited session folder: %s Resuming previous feed ingestion session", incomplited_run_dir)
-        ingest_job_details(dir_date, incomplited_run_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data)
+        ingest_job_details(dir_date, incomplited_run_dir, JOB_DETAILS_DIR, header_data)
         
         pipeline_run_date = dir_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
         STATE_FILE.write_text(pipeline_run_date, encoding="utf-8")
@@ -54,7 +54,7 @@ def run_feed_ingestion():
     else:
         logger.debug("No previous failed feed ingestion session was found")
         fresh_feed_dir = ingest_feed_data(current_date, header_data, BRONZE_FEED_DIR)
-        ingest_job_details(current_date, fresh_feed_dir, ACTIVE_JOB_DIR, INACTIVE_JOB_DIR, header_data)
+        ingest_job_details(current_date, fresh_feed_dir, JOB_DETAILS_DIR, header_data)
 
         pipeline_run_date = current_date.strftime("%a, %d %b %Y %H:%M:%S GMT")
         STATE_FILE.write_text(pipeline_run_date, encoding="utf-8")
