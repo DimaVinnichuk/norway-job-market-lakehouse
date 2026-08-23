@@ -121,22 +121,24 @@ def ingest_feed_data(pipeline_run_date, header_data, bronze_feed_dir):
     logger.info("Feed data ingestion completed.")
     return current_run_dir
 
-def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive_dir, header_data):
+def ingest_job_details(dirs_name_date, fresh_feed_data_dir, job_details_dir, header_data):
     """Extract and save job details from API"""
 
-    def write_data_to_file(mode, data, batch_num, partition):
+    def write_data_to_file(mode, data, dir_time, batch_num, partition):
         """Write prepared batch to a file"""
 
         filename = f"{dir_time}_batch{batch_num}.json"
         filepath = partition / filename
         with open(filepath, mode, encoding="utf-8")as f:
-            json.dump(data, f, indent=4)
+            for item in data:
+                json_sring = json.dumps(item, ensure_ascii=False)
+                f.write(json_sring + "\n")
         return batch_num + 1
     
     def check_already_saved_ids (data_path, dir_time):
         """Return set of already saved job details from last incomplited session if exists and number of butch to correct batch counting"""
 
-        logger.debug("Checking for already saved active/inactive job details")
+        logger.debug("Checking for already saved job details")
         batch_num = 1
         writed_job_ids = set()
         if data_path.exists():
@@ -171,14 +173,12 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
     dir_time = dirs_name_date.strftime("%H%M%S")
 
     partition = Path(f"{dir_year}/{dir_month}/{dir_day}")
-    active_partition_path = active_dir / partition
-    inactive_partition_path = inactive_dir / partition
 
-    inactive_partition_path.mkdir(parents=True, exist_ok=True)
-    active_partition_path.mkdir(parents=True, exist_ok=True)
+    partition_path = job_details_dir / partition
 
-    active_saved_job_ids, active_batch_num = check_already_saved_ids(active_partition_path, dir_time)
-    inactive_saved_job_ids, inactive_batch_num = check_already_saved_ids(inactive_partition_path, dir_time)
+    partition_path.mkdir(parents=True, exist_ok=True)
+
+    saved_job_ids, batch_num = check_already_saved_ids(partition_path, dir_time)
 
     logger.info("Ingesting job details...")
     logger.debug("Reading fresh feed data dir: %s...", fresh_feed_data_dir)
@@ -212,19 +212,15 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
                 logger.warning("Skipped file: %s. Feed file do not contains any job data.", feed_file)
     logger.info(f"{len(uniq_ids)} uniq job id(s) was retrieved from feed data.")
 
-    if active_saved_job_ids or inactive_saved_job_ids : logger.info("Resuming failed ingestion job details session.")
-
-    if active_saved_job_ids:
-        logger.info("%s allready saved active ids skipped.", len(active_saved_job_ids))
-        uniq_ids.difference_update(active_saved_job_ids)
-
-    if inactive_saved_job_ids:
-        logger.info("%s allready saved inactive ids skipped.", len(inactive_saved_job_ids))
-        uniq_ids.difference_update(inactive_saved_job_ids)
+    if saved_job_ids: 
+        logger.info("Resuming failed ingestion job details session.")
+        logger.info("%s allready saved ids skipped.", len(saved_job_ids))
+        uniq_ids.difference_update(saved_job_ids)
     
-    active_job_list = []
-    inactive_job_list = []
+    job_list = []
     job_details_number = 0
+    batch_size = 0
+    max_batch_size = 100*1024*1024
 
     logger.debug("Requesting job details by retrieved ids...")
     for job_id in uniq_ids:
@@ -237,32 +233,22 @@ def ingest_job_details(dirs_name_date, fresh_feed_data_dir, active_dir, inactive
             raise SystemExit(1)
         try:
             job_details = response.json()
+            batch_size += len((response.text).encode("utf-8"))
         except json.JSONDecodeError as e:
             logger.warning("Skipped job details for id: %s. Error: %s", job_id, e)
             continue
 
-        job_status = job_details.get("status").strip()
-        if job_status:
-            job_details_number += 1
-            if job_status == "ACTIVE":
-                active_job_list.append(job_details)
-                if len(active_job_list) >= 100:
-                    active_batch_num = write_data_to_file("w", active_job_list, active_batch_num, active_partition_path)
-                    active_job_list.clear()
-            else:
-                inactive_job_list.append(job_details)
-                if len(inactive_job_list) >= 1000:
-                    inactive_batch_num = write_data_to_file("w", inactive_job_list, inactive_batch_num, inactive_partition_path) 
-                    inactive_job_list.clear()
-        else:
-            logger.warning("Job details response has no status field. Skipped ID: %s", job_id)      
-    time.sleep(0.5)
+        job_details_number += 1
+        job_list.append(job_details)
+        if batch_size >= max_batch_size:
+            batch_num = write_data_to_file("w", job_list, dir_time, batch_num, partition_path)
+            job_list.clear()
+        time.sleep(0.5)
 
-    if active_job_list:
-        write_data_to_file("w", active_job_list, active_batch_num, active_partition_path)
-    if inactive_job_list:
-        write_data_to_file("w", inactive_job_list, inactive_batch_num, inactive_partition_path)
-    logger.info("%s job details was saved at: %s and(or) %s", job_details_number, active_partition_path, inactive_partition_path)
+    if job_list:
+        write_data_to_file("w", job_list, dir_time, batch_num, partition_path)
+
+    logger.info("%s job details was saved at: %s", job_details_number, partition_path)
     logger.info("Job details ingesting completed.")
 
 
